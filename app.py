@@ -10,7 +10,7 @@ from hindsight_client import Hindsight
 
 
 # ============================================================
-# RFP MIND — Hindsight-powered Proposal Agent
+# RFP MIND — Hindsight-Powered Proposal Agent
 # ============================================================
 
 HINDSIGHT_API_URL = "https://api.hindsight.vectorize.io"
@@ -31,12 +31,13 @@ st.set_page_config(
 
 
 # ============================================================
-# PROFESSIONAL LIGHTWEIGHT STYLING
+# CUSTOM CSS
 # ============================================================
 
 st.markdown(
     """
-<style>
+    <style>
+
     .block-container {
         padding-top: 2rem;
         padding-bottom: 2rem;
@@ -56,8 +57,34 @@ st.markdown(
         min-height: 42px;
         font-weight: 600;
     }
-</style>
-""",
+
+    .memory-card {
+        padding: 20px;
+        border-radius: 14px;
+        border: 1px solid #dddddd;
+        margin-bottom: 12px;
+    }
+
+    .memory-title {
+        font-size: 18px;
+        font-weight: 700;
+    }
+
+    .memory-type {
+        font-size: 13px;
+        opacity: 0.7;
+        margin-bottom: 8px;
+    }
+
+    .flow-card {
+        padding: 18px;
+        border-radius: 14px;
+        border: 1px solid #dddddd;
+        min-height: 160px;
+    }
+
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -80,11 +107,36 @@ DEFAULT_STATE = {
     "outcome_lessons": 0,
     "telemetry": [],
     "outcome_saved": False,
+    "proposal_outcome": "Pending",
+    "proposal_lesson": "",
+    "agent_memory_query": "",
 }
 
 for key, value in DEFAULT_STATE.items():
+
     if key not in st.session_state:
+
         st.session_state[key] = value
+
+
+# ============================================================
+# ENVIRONMENT VARIABLES
+# ============================================================
+
+groq_key = os.getenv(
+    "GROQ_API_KEY",
+    "",
+).strip()
+
+hindsight_key = os.getenv(
+    "HINDSIGHT_API_KEY",
+    "",
+).strip()
+
+bank_id = os.getenv(
+    "HINDSIGHT_BANK_ID",
+    DEFAULT_BANK_ID,
+).strip() or DEFAULT_BANK_ID
 
 
 # ============================================================
@@ -92,11 +144,14 @@ for key, value in DEFAULT_STATE.items():
 # ============================================================
 
 def add_log(message):
-    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+
+    timestamp = datetime.datetime.now().strftime(
+        "%H:%M:%S"
+    )
 
     st.session_state.telemetry.insert(
         0,
-        f"[{timestamp}] {message}"
+        f"[{timestamp}] {message}",
     )
 
     st.session_state.telemetry = (
@@ -105,14 +160,8 @@ def add_log(message):
 
 
 def reset_workspace():
-    """
-    Clears the current proposal workspace.
 
-    IMPORTANT:
-    This does NOT delete Hindsight memories.
-    """
-
-    keys_to_clear = [
+    keys = [
         "baseline_proposal",
         "context_proposal",
         "retrieved_memories",
@@ -123,45 +172,35 @@ def reset_workspace():
         "outcome_saved",
         "proposal_outcome",
         "proposal_lesson",
-        "client_name_input",
-        "rfp_input",
     ]
 
-    for key in keys_to_clear:
+    for key in keys:
 
         if key in st.session_state:
+
             del st.session_state[key]
 
-    st.session_state.telemetry = []
+    st.session_state.baseline_proposal = ""
+    st.session_state.context_proposal = ""
+    st.session_state.retrieved_memories = []
+    st.session_state.memory_insights = []
+    st.session_state.memory_count = 0
+    st.session_state.current_client = ""
+    st.session_state.current_rfp = ""
+    st.session_state.proposal_runs = 0
+    st.session_state.learning_events = 0
+    st.session_state.outcome_lessons = 0
+    st.session_state.outcome_saved = False
 
 
 # ============================================================
-# ENVIRONMENT / CODESPACES SECRETS
-# ============================================================
-
-groq_key = os.getenv(
-    "GROQ_API_KEY",
-    ""
-).strip()
-
-hindsight_key = os.getenv(
-    "HINDSIGHT_API_KEY",
-    ""
-).strip()
-
-bank_id = os.getenv(
-    "HINDSIGHT_BANK_ID",
-    DEFAULT_BANK_ID,
-).strip() or DEFAULT_BANK_ID
-
-
-# ============================================================
-# HINDSIGHT
+# HINDSIGHT CONNECTION
 # ============================================================
 
 def get_hindsight_client(api_key):
 
     if not api_key:
+
         raise ValueError(
             "Hindsight API key is not configured."
         )
@@ -193,15 +232,17 @@ def ensure_memory_bank(
 
         message = str(exc).lower()
 
-        # Ignore only existing-bank errors.
+        existing_words = [
+            "exist",
+            "already",
+            "409",
+        ]
+
         if not any(
             word in message
-            for word in [
-                "exist",
-                "already",
-                "409",
-            ]
+            for word in existing_words
         ):
+
             raise
 
 
@@ -232,7 +273,7 @@ def store_memory(
 
 
 # ============================================================
-# MEMORY DEDUPLICATION
+# MEMORY HELPERS
 # ============================================================
 
 def normalize_text(text):
@@ -268,7 +309,7 @@ def clean_memory_results(
     results = getattr(
         result,
         "results",
-        []
+        [],
     ) or []
 
     for item in results:
@@ -277,11 +318,12 @@ def clean_memory_results(
             getattr(
                 item,
                 "text",
-                ""
+                "",
             ) or ""
         ).strip()
 
         if not text_value:
+
             continue
 
         duplicate = False
@@ -289,9 +331,7 @@ def clean_memory_results(
         for existing in memories:
 
             if (
-                normalize_text(
-                    text_value
-                )
+                normalize_text(text_value)
                 ==
                 normalize_text(
                     existing["text"]
@@ -304,7 +344,7 @@ def clean_memory_results(
             if (
                 similar_text(
                     text_value,
-                    existing["text"]
+                    existing["text"],
                 )
                 >= 0.78
             ):
@@ -313,6 +353,7 @@ def clean_memory_results(
                 break
 
         if duplicate:
+
             continue
 
         memories.append(
@@ -322,7 +363,7 @@ def clean_memory_results(
                     getattr(
                         item,
                         "type",
-                        "memory"
+                        "memory",
                     )
                     or "memory"
                 ),
@@ -330,7 +371,7 @@ def clean_memory_results(
                     getattr(
                         item,
                         "context",
-                        ""
+                        "",
                     )
                     or ""
                 ),
@@ -338,6 +379,7 @@ def clean_memory_results(
         )
 
         if len(memories) >= maximum:
+
             break
 
     return memories
@@ -359,6 +401,7 @@ def recall_memory(
     )
 
     async def async_recall():
+
         return await client.arecall(
             bank_id=memory_bank_id,
             query=query,
@@ -375,6 +418,153 @@ def recall_memory(
         maximum=8,
     )
 
+
+def format_memory_context(
+    memories,
+):
+
+    if not memories:
+
+        return (
+            "No relevant Hindsight memories "
+            "were retrieved."
+        )
+
+    return "\n".join(
+        f"- [{memory['type']}] "
+        f"{memory['text']}"
+        for memory in memories
+    )
+
+
+# ============================================================
+# MEMORY INSIGHTS
+# ============================================================
+
+def classify_memory(
+    text,
+    memory_type="",
+):
+
+    combined = (
+        f"{memory_type} {text}"
+    ).lower()
+
+    if "azure" in combined:
+
+        return (
+            "Cloud Preference",
+            "Use an Azure-first architecture.",
+        )
+
+    if (
+        "iso 27001" in combined
+        or "compliance" in combined
+    ):
+
+        return (
+            "Compliance",
+            "Address ISO 27001 requirements.",
+        )
+
+    if (
+        "pricing" in combined
+        or "price" in combined
+        or "commercial" in combined
+    ):
+
+        return (
+            "Commercial Lesson",
+            "Use transparent, non-aggressive pricing.",
+        )
+
+    if (
+        "phased migration" in combined
+        or "migration" in combined
+    ):
+
+        return (
+            "Delivery Pattern",
+            "Use a phased migration approach.",
+        )
+
+    if (
+        "security" in combined
+        or "control" in combined
+    ):
+
+        return (
+            "Security Pattern",
+            "Make security controls explicit.",
+        )
+
+    if (
+        "milestone" in combined
+        or "kpi" in combined
+    ):
+
+        return (
+            "Measurement",
+            "Use measurable delivery milestones.",
+        )
+
+    if (
+        "outcome" in combined
+        or "rejected" in combined
+        or "won" in combined
+        or "lost" in combined
+    ):
+
+        return (
+            "Past Outcome",
+            "Apply the historical lesson.",
+        )
+
+    return (
+        "Organizational Knowledge",
+        "Use as historical context.",
+    )
+
+
+def build_memory_insights(
+    memories,
+):
+
+    insights = []
+    seen = set()
+
+    for memory in memories:
+
+        label, decision = classify_memory(
+            memory["text"],
+            memory["type"],
+        )
+
+        key = normalize_text(
+            label + decision
+        )
+
+        if key in seen:
+
+            continue
+
+        seen.add(key)
+
+        insights.append(
+            {
+                "label": label,
+                "decision": decision,
+                "source": memory["text"],
+            }
+        )
+
+        if len(insights) >= 5:
+
+            break
+
+    return insights
+
+
 # ============================================================
 # GROQ
 # ============================================================
@@ -386,6 +576,7 @@ def generate_response(
 ):
 
     if not api_key:
+
         raise ValueError(
             "Groq API key is not configured."
         )
@@ -418,150 +609,6 @@ def generate_response(
     )
 
 
-# ============================================================
-# MEMORY PRESENTATION
-# ============================================================
-
-def classify_memory(
-    text,
-    memory_type="",
-):
-
-    combined = (
-        f"{memory_type} {text}"
-    ).lower()
-
-    if "azure" in combined:
-
-        return (
-            "Cloud Preference",
-            "Use an Azure-first architecture",
-        )
-
-    if (
-        "iso 27001" in combined
-        or "compliance" in combined
-    ):
-
-        return (
-            "Compliance",
-            "Address ISO 27001 requirements",
-        )
-
-    if (
-        "pricing" in combined
-        or "price" in combined
-        or "commercial" in combined
-    ):
-
-        return (
-            "Commercial Lesson",
-            "Use transparent, non-aggressive pricing",
-        )
-
-    if (
-        "phased migration" in combined
-        or "migration" in combined
-    ):
-
-        return (
-            "Delivery Pattern",
-            "Use a phased migration approach",
-        )
-
-    if (
-        "security" in combined
-        or "control" in combined
-    ):
-
-        return (
-            "Security Pattern",
-            "Make security controls explicit",
-        )
-
-    if (
-        "milestone" in combined
-        or "kpi" in combined
-    ):
-
-        return (
-            "Measurement",
-            "Use measurable delivery milestones",
-        )
-
-    if (
-        "outcome" in combined
-        or "rejected" in combined
-        or "won" in combined
-        or "lost" in combined
-    ):
-
-        return (
-            "Past Outcome",
-            "Apply the historical lesson",
-        )
-
-    return (
-        "Organizational Knowledge",
-        "Use as historical context",
-    )
-
-
-def build_memory_insights(
-    memories,
-):
-
-    insights = []
-    seen = set()
-
-    for memory in memories:
-
-        label, decision = classify_memory(
-            memory["text"],
-            memory["type"],
-        )
-
-        key = normalize_text(
-            label + decision
-        )
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-
-        insights.append(
-            {
-                "label": label,
-                "decision": decision,
-                "source": memory["text"],
-            }
-        )
-
-        if len(insights) >= 5:
-            break
-
-    return insights
-
-
-def format_memory_context(
-    memories,
-):
-
-    if not memories:
-
-        return (
-            "No relevant Hindsight memories "
-            "were retrieved."
-        )
-
-    return "\n".join(
-        f"- [{memory['type']}] "
-        f"{memory['text']}"
-        for memory in memories
-    )
-
-
 def get_executive_summary(
     proposal,
 ):
@@ -577,11 +624,7 @@ def get_executive_summary(
 
     if match:
 
-        summary = (
-            match
-            .group(1)
-            .strip()
-        )
+        summary = match.group(1).strip()
 
     else:
 
@@ -604,43 +647,54 @@ def get_executive_summary(
 
 with st.sidebar:
 
-    st.header("System Status")
+    st.header("⚙️ System Status")
 
     st.caption(
-        "Credentials are loaded securely "
-        "from Codespaces secrets."
+        "RFP Mind uses Groq for generation "
+        "and Hindsight for persistent memory."
     )
 
     if groq_key:
 
-        st.success(
-            "Groq connected"
-        )
+        st.success("🟢 Groq connected")
 
     else:
 
-        st.error(
-            "Groq secret missing"
-        )
+        st.error("🔴 Groq secret missing")
 
     if hindsight_key:
 
         st.success(
-            "Hindsight credential loaded"
+            "🟢 Hindsight connected"
         )
 
     else:
 
         st.error(
-            "Hindsight secret missing"
+            "🔴 Hindsight secret missing"
         )
 
     st.caption(
-        f"Memory bank: {bank_id}"
+        f"Memory Bank: {bank_id}"
     )
 
+    st.divider()
+
+    st.subheader("🧭 Navigation")
+
+    app_page = st.radio(
+        "Select page",
+        [
+            "📝 Proposal Generator",
+            "🧠 Agent Memory",
+        ],
+        label_visibility="collapsed",
+    )
+
+    st.divider()
+
     if st.button(
-        "Test Hindsight Connection",
+        "🔌 Test Hindsight Connection",
         use_container_width=True,
     ):
 
@@ -662,9 +716,7 @@ with st.sidebar:
                 budget="low",
             )
 
-            st.session_state.hindsight_verified = (
-                True
-            )
+            st.session_state.hindsight_verified = True
 
             add_log(
                 "Hindsight connection verified."
@@ -676,13 +728,7 @@ with st.sidebar:
 
         except Exception as exc:
 
-            st.session_state.hindsight_verified = (
-                False
-            )
-
-            add_log(
-                "Hindsight connection test failed."
-            )
+            st.session_state.hindsight_verified = False
 
             st.error(
                 "Hindsight connection failed."
@@ -694,9 +740,7 @@ with st.sidebar:
 
     st.divider()
 
-    st.subheader(
-        "Current Session"
-    )
+    st.subheader("📊 Current Session")
 
     st.metric(
         "Proposal Runs",
@@ -716,12 +760,12 @@ with st.sidebar:
     st.divider()
 
     with st.expander(
-        "Demo Setup"
+        "🎬 Demo Setup"
     ):
 
         st.caption(
-            "Optional: seed the Acme Corp "
-            "memory set for a judge demo."
+            "Create sample Acme Corp memories "
+            "for your judge demonstration."
         )
 
         if st.button(
@@ -756,7 +800,6 @@ with st.sidebar:
                     "include a phased migration plan and "
                     "explicit security controls.",
                 ),
-
             ]
 
             success_count = 0
@@ -777,13 +820,11 @@ with st.sidebar:
                         bank_id,
                         content=(
                             "Client: Acme Corp\n"
-                            f"Information type: "
-                            f"{category}\n"
+                            f"Information type: {category}\n"
                             f"Fact: {fact}"
                         ),
                         context=(
-                            f"RFP Mind demo — "
-                            f"{category}"
+                            f"RFP Mind demo — {category}"
                         ),
                         document_id=(
                             f"acme-demo-{index}"
@@ -801,19 +842,17 @@ with st.sidebar:
             if success_count:
 
                 st.success(
-                    f"{success_count}/4 "
-                    "demo memories saved."
+                    f"{success_count}/4 demo memories saved."
                 )
 
             if errors:
 
                 st.warning(
-                    "Some demo memories "
-                    "could not be saved."
+                    "Some memories could not be saved."
                 )
 
     with st.expander(
-        "Technical Details"
+        "🔧 Technical Details"
     ):
 
         st.caption(
@@ -825,13 +864,433 @@ with st.sidebar:
         )
 
         st.caption(
-            "Recall → Generate → Learn"
+            "Remember → Recall → Generate → Learn"
         )
 
 
 # ============================================================
-# MAIN HEADER
-# NATIVE STREAMLIT ONLY
+# AGENT MEMORY PAGE
+# ============================================================
+
+if app_page == "🧠 Agent Memory":
+
+    st.title("🧠 Agent Memory")
+
+    st.caption(
+        "Persistent organizational memory powered by Hindsight. "
+        "RFP Mind remembers, recalls, and learns from previous interactions."
+    )
+
+    st.divider()
+
+    # --------------------------------------------------------
+    # MEMORY OVERVIEW
+    # --------------------------------------------------------
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+
+        st.metric(
+            "Memory Bank",
+            bank_id,
+        )
+
+    with col2:
+
+        st.metric(
+            "Retrieved Memories",
+            st.session_state.memory_count,
+        )
+
+    with col3:
+
+        st.metric(
+            "Learning Events",
+            st.session_state.learning_events,
+        )
+
+    if hindsight_key:
+
+        st.success(
+            "🟢 Hindsight memory service is configured."
+        )
+
+    else:
+
+        st.error(
+            "🔴 Hindsight API key is not configured."
+        )
+
+    # --------------------------------------------------------
+    # RECALL MEMORY
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "🔍 Recall Organizational Memory"
+    )
+
+    st.caption(
+        "Ask RFP Mind what it remembers. "
+        "The query is sent to Hindsight to retrieve "
+        "relevant organizational memories."
+    )
+
+    memory_query = st.text_area(
+        "What should RFP Mind remember?",
+        placeholder=(
+            "Example: What do we know about Acme Corp's "
+            "cloud preferences, compliance requirements, "
+            "and previous proposal lessons?"
+        ),
+        height=130,
+        key="agent_memory_query",
+    )
+
+    recall_col, clear_col = st.columns(
+        [3, 1]
+    )
+
+    with recall_col:
+
+        recall_button = st.button(
+            "🔎 Recall Memory",
+            type="primary",
+            use_container_width=True,
+        )
+
+    with clear_col:
+
+        clear_button = st.button(
+            "Clear",
+            use_container_width=True,
+        )
+
+    if clear_button:
+
+        st.session_state.retrieved_memories = []
+        st.session_state.memory_insights = []
+        st.session_state.memory_count = 0
+
+        st.rerun()
+
+    if recall_button:
+
+        if not hindsight_key:
+
+            st.error(
+                "Hindsight API key is missing."
+            )
+
+        elif not memory_query.strip():
+
+            st.warning(
+                "Enter a question or topic."
+            )
+
+        else:
+
+            try:
+
+                with st.spinner(
+                    "Recalling organizational memory..."
+                ):
+
+                    memories = recall_memory(
+                        hindsight_key,
+                        bank_id,
+                        memory_query.strip(),
+                    )
+
+                    st.session_state.retrieved_memories = (
+                        memories
+                    )
+
+                    st.session_state.memory_count = (
+                        len(memories)
+                    )
+
+                    st.session_state.memory_insights = (
+                        build_memory_insights(
+                            memories
+                        )
+                    )
+
+                    add_log(
+                        f"Agent Memory recalled "
+                        f"{len(memories)} memories."
+                    )
+
+                st.success(
+                    f"Retrieved {len(memories)} relevant memories."
+                )
+
+            except Exception as exc:
+
+                st.error(
+                    "Unable to recall Hindsight memory."
+                )
+
+                st.caption(
+                    str(exc)[:300]
+                )
+
+    # --------------------------------------------------------
+    # RETRIEVED MEMORIES
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "📚 Retrieved Memories"
+    )
+
+    memories = (
+        st.session_state.retrieved_memories
+    )
+
+    if memories:
+
+        for index, memory in enumerate(
+            memories,
+            start=1,
+        ):
+
+            with st.container(
+                border=True
+            ):
+
+                st.markdown(
+                    f"### 🧠 Memory {index}"
+                )
+
+                st.caption(
+                    f"Type: {memory.get('type', 'memory')}"
+                )
+
+                st.write(
+                    memory.get(
+                        "text",
+                        "",
+                    )
+                )
+
+                if memory.get("context"):
+
+                    st.caption(
+                        f"Context: "
+                        f"{memory['context']}"
+                    )
+
+    else:
+
+        st.info(
+            "No memories retrieved yet. "
+            "Initialize the Acme demo memory from the sidebar "
+            "and then use Recall Memory."
+        )
+
+    # --------------------------------------------------------
+    # MEMORY INSIGHTS
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "💡 Memory Insights"
+    )
+
+    insights = (
+        st.session_state.memory_insights
+    )
+
+    if insights:
+
+        columns = st.columns(
+            min(3, len(insights))
+        )
+
+        for index, insight in enumerate(
+            insights
+        ):
+
+            with columns[
+                index % len(columns)
+            ]:
+
+                with st.container(
+                    border=True
+                ):
+
+                    st.caption(
+                        insight["label"]
+                    )
+
+                    st.markdown(
+                        f"**{insight['decision']}**"
+                    )
+
+                    st.caption(
+                        "Source memory"
+                    )
+
+                    st.write(
+                        insight["source"]
+                    )
+
+    else:
+
+        st.info(
+            "Memory insights appear after a successful recall."
+        )
+
+    # --------------------------------------------------------
+    # MEMORY FLOW
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "⚙️ How Agent Memory Works"
+    )
+
+    flow1, flow2, flow3, flow4 = st.columns(4)
+
+    with flow1:
+
+        st.markdown(
+            "### 🧠 Remember"
+        )
+
+        st.caption(
+            "RFP Mind stores useful organizational "
+            "knowledge and proposal outcomes in Hindsight."
+        )
+
+    with flow2:
+
+        st.markdown(
+            "### 🔍 Recall"
+        )
+
+        st.caption(
+            "Relevant historical memories are retrieved "
+            "for the current RFP or question."
+        )
+
+    with flow3:
+
+        st.markdown(
+            "### 🤖 Generate"
+        )
+
+        st.caption(
+            "The AI uses retrieved memory as historical "
+            "context when generating a proposal."
+        )
+
+    with flow4:
+
+        st.markdown(
+            "### 📈 Learn"
+        )
+
+        st.caption(
+            "Proposal outcomes and lessons are stored "
+            "so future proposals can benefit from them."
+        )
+
+    # --------------------------------------------------------
+    # MEMORY ACTIVITY
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "📊 Memory Activity"
+    )
+
+    activity1, activity2, activity3 = st.columns(3)
+
+    with activity1:
+
+        st.metric(
+            "Learning Events",
+            st.session_state.learning_events,
+        )
+
+    with activity2:
+
+        st.metric(
+            "Outcome Lessons",
+            st.session_state.outcome_lessons,
+        )
+
+    with activity3:
+
+        st.metric(
+            "Current Retrieved",
+            st.session_state.memory_count,
+        )
+
+    # --------------------------------------------------------
+    # JUDGE DEMO
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "🎬 Recommended Judge Demonstration"
+    )
+
+    st.markdown(
+        """
+### Step 1
+Click **Initialize Acme Demo Memory** in the sidebar.
+
+### Step 2
+Enter:
+
+`What do we know about Acme Corp's cloud preferences, compliance requirements, and previous proposal lessons?`
+
+### Step 3
+Click **Recall Memory**.
+
+### Step 4
+Show the retrieved memories and Memory Insights.
+
+### Step 5
+Go back to **📝 Proposal Generator**.
+
+### Step 6
+Create an Acme Corp proposal and select:
+
+**🧠 Generate With Hindsight**
+
+### Step 7
+Explain that the agent retrieves organizational knowledge
+and uses it as historical context for the proposal.
+"""
+    )
+
+    st.success(
+        "This page is using the same Hindsight memory bank "
+        "as the RFP Mind proposal workflow."
+    )
+
+    st.divider()
+
+    st.caption(
+        "RFP Mind · Hindsight-powered persistent organizational memory"
+    )
+
+    st.stop()
+
+
+# ============================================================
+# PROPOSAL GENERATOR PAGE
 # ============================================================
 
 st.title(
@@ -869,24 +1328,18 @@ with status3:
 # NEW PROPOSAL
 # ============================================================
 
-new_col, _ = st.columns(
-    [1, 5]
-)
+if st.button(
+    "＋ New Proposal",
+    type="secondary",
+):
 
-with new_col:
+    reset_workspace()
 
-    if st.button(
-        "＋ New Proposal",
-        use_container_width=True,
-    ):
-
-        reset_workspace()
-
-        st.rerun()
+    st.rerun()
 
 
 # ============================================================
-# STEP 1 — CREATE PROPOSAL
+# CREATE PROPOSAL
 # ============================================================
 
 st.divider()
@@ -896,22 +1349,15 @@ st.subheader(
 )
 
 st.caption(
-
-    "Enter the client and their proposal requirements. "
-
-    "Compare a standard response with one enhanced "
-
-    "by organizational memory."
-
+    "Enter the client and proposal requirements. "
+    "You can compare a standard proposal with one "
+    "enhanced using organizational memory."
 )
-
 
 client_name = st.text_input(
     "Client / Organization",
     placeholder="Example: Acme Corp",
-    key="client_name_input",
 )
-
 
 rfp_question = st.text_area(
     "Proposal Requirements",
@@ -921,21 +1367,11 @@ rfp_question = st.text_area(
         "security, ISO 27001 compliance, migration "
         "strategy, and commercial considerations."
     ),
-    height=140,
-    key="rfp_input",
-)
-
-st.caption(
-    "Describe what the client is asking for, including "
-    "technical requirements, security, compliance, "
-    "delivery, and commercial needs."
+    height=150,
 )
 
 
-baseline_col, memory_col = st.columns(
-    2
-)
-
+baseline_col, memory_col = st.columns(2)
 
 with baseline_col:
 
@@ -943,7 +1379,6 @@ with baseline_col:
         "📄 Generate Without Memory",
         use_container_width=True,
     )
-
 
 with memory_col:
 
@@ -955,7 +1390,7 @@ with memory_col:
 
 
 # ============================================================
-# BASELINE GENERATION
+# BASELINE PROPOSAL
 # ============================================================
 
 if baseline_button:
@@ -972,8 +1407,7 @@ if baseline_button:
     ):
 
         st.error(
-            "Enter both the client and "
-            "the Request for Proposal."
+            "Enter both the client and the Request for Proposal."
         )
 
     else:
@@ -1011,11 +1445,9 @@ CLIENT:
 
 {client_name.strip()}
 
-
 CURRENT REQUEST FOR PROPOSAL:
 
 {rfp_question.strip()}
-
 
 Generate:
 
@@ -1037,19 +1469,13 @@ Generate:
                 )
 
                 add_log(
-                    "Baseline proposal generated "
-                    "without Hindsight."
+                    "Baseline proposal generated."
                 )
 
         except Exception as exc:
 
-            add_log(
-                "Baseline generation failed."
-            )
-
             st.error(
-                "The baseline proposal could "
-                "not be generated."
+                "The baseline proposal could not be generated."
             )
 
             st.caption(
@@ -1058,7 +1484,7 @@ Generate:
 
 
 # ============================================================
-# HINDSIGHT-AWARE GENERATION
+# HINDSIGHT-AWARE PROPOSAL
 # ============================================================
 
 if memory_button:
@@ -1081,8 +1507,7 @@ if memory_button:
     ):
 
         st.error(
-            "Enter both the client and "
-            "the Request for Proposal."
+            "Enter both the client and the Request for Proposal."
         )
 
     else:
@@ -1090,8 +1515,7 @@ if memory_button:
         try:
 
             with st.spinner(
-                "Recalling relevant "
-                "organizational memory..."
+                "Recalling relevant organizational memory..."
             ):
 
                 recall_query = f"""
@@ -1103,8 +1527,8 @@ Client:
 Current RFP:
 {rfp_question.strip()}
 
-Retrieve the most useful historical
-organizational knowledge for this proposal.
+Retrieve the most useful historical organizational
+knowledge for this proposal.
 
 Prioritize:
 
@@ -1139,18 +1563,16 @@ over repetitive raw memories.
                     )
                 )
 
+                historical_context = (
+                    format_memory_context(
+                        memories
+                    )
+                )
+
                 add_log(
                     f"Hindsight recalled "
                     f"{len(memories)} useful memories."
                 )
-
-
-            historical_context = (
-                format_memory_context(
-                    memories
-                )
-            )
-
 
             with st.spinner(
                 "Generating memory-informed proposal..."
@@ -1185,8 +1607,7 @@ MEMORY RULES:
 
 - Never present invented numbers, prices,
   percentages, SLAs, KPIs, timelines,
-  certifications, or commitments as
-  confirmed facts.
+  certifications, or commitments as confirmed facts.
 
 - Values not supplied by the RFP or memory
   must be labeled:
@@ -1219,16 +1640,13 @@ CLIENT:
 
 {client_name.strip()}
 
-
 CURRENT REQUEST FOR PROPOSAL:
 
 {rfp_question.strip()}
 
-
 RELEVANT HINDSIGHT MEMORY:
 
 {historical_context}
-
 
 Generate the proposal.
 """
@@ -1253,9 +1671,7 @@ Generate the proposal.
 
                 st.session_state.learning_events += 1
 
-                st.session_state.outcome_saved = (
-                    False
-                )
+                st.session_state.outcome_saved = False
 
                 add_log(
                     "Memory-informed proposal generated."
@@ -1263,13 +1679,8 @@ Generate the proposal.
 
         except Exception as exc:
 
-            add_log(
-                "Memory-informed generation failed."
-            )
-
             st.error(
-                "The memory-informed proposal "
-                "could not be generated."
+                "The memory-informed proposal could not be generated."
             )
 
             st.caption(
@@ -1278,7 +1689,46 @@ Generate the proposal.
 
 
 # ============================================================
-# STEP 2 — MEMORY INSIGHTS
+# BASELINE RESULT
+# ============================================================
+
+if st.session_state.baseline_proposal:
+
+    st.divider()
+
+    st.subheader(
+        "📄 Baseline Proposal — Without Hindsight"
+    )
+
+    st.caption(
+        "Generated using only the current proposal requirements."
+    )
+
+    with st.container(
+        border=True
+    ):
+
+        st.caption(
+            "Executive Summary"
+        )
+
+        st.write(
+            get_executive_summary(
+                st.session_state.baseline_proposal
+            )
+        )
+
+    with st.expander(
+        "View Full Baseline Proposal"
+    ):
+
+        st.markdown(
+            st.session_state.baseline_proposal
+        )
+
+
+# ============================================================
+# MEMORY INSIGHTS
 # ============================================================
 
 if st.session_state.context_proposal:
@@ -1286,13 +1736,12 @@ if st.session_state.context_proposal:
     st.divider()
 
     st.subheader(
-        "#What RFP Mind Remembered"
+        "🧠 What RFP Mind Remembered"
     )
 
     st.caption(
-        "Hindsight results are consolidated "
-        "into decision-oriented insights rather "
-        "than shown as a long raw memory list."
+        "Hindsight memories are converted into "
+        "decision-oriented organizational insights."
     )
 
     insights = (
@@ -1301,20 +1750,16 @@ if st.session_state.context_proposal:
 
     if insights:
 
-        insight_columns = st.columns(
-            min(
-                3,
-                len(insights)
-            )
+        columns = st.columns(
+            min(3, len(insights))
         )
 
         for index, insight in enumerate(
             insights
         ):
 
-            with insight_columns[
-                index
-                % len(insight_columns)
+            with columns[
+                index % len(columns)
             ]:
 
                 with st.container(
@@ -1332,13 +1777,12 @@ if st.session_state.context_proposal:
     else:
 
         st.info(
-            "No relevant historical memory "
-            "was found for this proposal."
+            "No relevant historical memory was found."
         )
 
 
 # ============================================================
-# BEFORE / AFTER COMPARISON
+# BEFORE / AFTER
 # ============================================================
 
 if (
@@ -1350,13 +1794,7 @@ if (
     st.divider()
 
     st.subheader(
-        "3. How Hindsight Changed the Proposal"
-    )
-
-    st.caption(
-        "The baseline uses only the current RFP. "
-        "The context-aware version also uses "
-        "historical organizational knowledge."
+        "🔄 How Hindsight Changed the Proposal"
     )
 
     comparison = [
@@ -1384,22 +1822,17 @@ if (
             "Generic response",
             "Memory-driven decisions shown",
         ),
-
     ]
 
-    comparison_columns = st.columns(
-        4
-    )
+    columns = st.columns(4)
 
     for index, (
         title,
         baseline,
         memory_version,
-    ) in enumerate(
-        comparison
-    ):
+    ) in enumerate(comparison):
 
-        with comparison_columns[index]:
+        with columns[index]:
 
             with st.container(
                 border=True
@@ -1427,7 +1860,7 @@ if (
 
 
 # ============================================================
-# STEP 4 — CONTEXT-AWARE PROPOSAL
+# CONTEXT-AWARE PROPOSAL
 # ============================================================
 
 if st.session_state.context_proposal:
@@ -1435,7 +1868,7 @@ if st.session_state.context_proposal:
     st.divider()
 
     st.subheader(
-        "#Context-Aware Proposal"
+        "🤖 Context-Aware Proposal"
     )
 
     st.success(
@@ -1473,8 +1906,10 @@ if st.session_state.context_proposal:
 
 if st.session_state.context_proposal:
 
+    st.divider()
+
     st.subheader(
-        "Why This Proposal Changed"
+        "💡 Why This Proposal Changed"
     )
 
     if st.session_state.memory_insights:
@@ -1499,13 +1934,12 @@ if st.session_state.context_proposal:
     else:
 
         st.info(
-            "No memory-driven decision "
-            "was identified."
+            "No memory-driven decision was identified."
         )
 
 
 # ============================================================
-# STEP 5 — OUTCOME LEARNING
+# OUTCOME LEARNING
 # ============================================================
 
 if st.session_state.context_proposal:
@@ -1513,12 +1947,12 @@ if st.session_state.context_proposal:
     st.divider()
 
     st.subheader(
-        "Learn From the Outcome"
+        "📈 Learn From the Outcome"
     )
 
     st.caption(
-        "Record what happened so future "
-        "proposals can retrieve this lesson."
+        "Record what happened so future proposals "
+        "can retrieve the lesson."
     )
 
     outcome = st.selectbox(
@@ -1536,8 +1970,8 @@ if st.session_state.context_proposal:
         "Lesson to Remember",
         placeholder=(
             "Example: Pricing was too aggressive. "
-            "Future proposals should use transparent, "
-            "non-aggressive pricing."
+            "Future proposals should use transparent "
+            "and non-aggressive pricing."
         ),
         height=100,
         key="proposal_lesson",
@@ -1561,8 +1995,7 @@ if st.session_state.context_proposal:
         ):
 
             st.error(
-                "Choose a final outcome or "
-                "provide a lesson to remember."
+                "Choose a final outcome or provide a lesson."
             )
 
         else:
@@ -1584,9 +2017,7 @@ if st.session_state.context_proposal:
                     hindsight_key,
                     bank_id,
                     content=outcome_content,
-                    context=(
-                        "RFP outcome and learning"
-                    ),
+                    context="RFP outcome and learning",
                     document_id=(
                         "rfp-outcome-"
                         +
@@ -1596,17 +2027,11 @@ if st.session_state.context_proposal:
                     ),
                 )
 
-                st.session_state.outcome_lessons += (
-                    1
-                )
+                st.session_state.outcome_lessons += 1
 
-                st.session_state.learning_events += (
-                    1
-                )
+                st.session_state.learning_events += 1
 
-                st.session_state.outcome_saved = (
-                    True
-                )
+                st.session_state.outcome_saved = True
 
                 add_log(
                     "Proposal outcome saved to Hindsight."
@@ -1619,10 +2044,6 @@ if st.session_state.context_proposal:
 
             except Exception as exc:
 
-                add_log(
-                    "Outcome learning failed."
-                )
-
                 st.error(
                     "The outcome could not be saved."
                 )
@@ -1633,16 +2054,13 @@ if st.session_state.context_proposal:
 
 
 # ============================================================
-# TECHNICAL ACTIVITY
-# ============================================================
-
-# ============================================================
-# FLOATING CUSTOMER SUPPORT
+# CUSTOMER SUPPORT / ISSUE MEMORY
 # ============================================================
 
 st.markdown(
     """
     <style>
+
     div[data-testid="stPopover"] {
         position: fixed !important;
         right: 20px !important;
@@ -1651,15 +2069,6 @@ st.markdown(
         z-index: 99999 !important;
     }
 
-    div[data-testid="stPopover"] > div {
-        width: 70px !important;
-    }
-
-    div[data-testid="stPopover"] button {
-        border-radius: 50px !important;
-        padding: 8px 14px !important;
-        white-space: nowrap !important;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1667,96 +2076,135 @@ st.markdown(
 
 with st.popover("💬"):
 
-    st.markdown("### ⚠️ Report an Issue")
+    st.markdown(
+        "### ⚠️ Report an Issue"
+    )
 
     st.caption(
-        "Report a complaint, problem, service issue, "
-        "or anything that needs attention."
+        "Report a customer issue or service problem."
     )
 
     customer_issue = st.text_area(
         "Describe the issue",
         placeholder=(
-            "Example: We faced delays during the previous "
-            "migration and need better communication and support."
+            "Example: We faced delays during "
+            "the previous migration."
         ),
         height=100,
-        key="customer_issue",
     )
 
     if st.button(
         "📩 Submit Issue",
-        use_container_width=True
+        use_container_width=True,
     ):
 
-        if customer_issue.strip():
+        if not customer_issue.strip():
+
+            st.warning(
+                "Please describe the issue."
+            )
+
+        elif not hindsight_key:
+
+            st.error(
+                "Hindsight is not configured."
+            )
+
+        elif not groq_key:
+
+            st.error(
+                "Groq is not configured."
+            )
+
+        else:
 
             try:
-                hindsight_client = get_hindsight(
-                    os.getenv("HINDSIGHT_API_KEY")
-                )
 
-                ensure_bank(
-                    hindsight_client,
-                    DEFAULT_BANK_ID
-                )
-
-                issue_memories = recall_hindsight(
-                    os.getenv("HINDSIGHT_API_KEY"),
-                    DEFAULT_BANK_ID,
+                issue_memories = recall_memory(
+                    hindsight_key,
+                    bank_id,
                     customer_issue.strip(),
                 )
 
-                memory_context = build_memory_context(
-                    issue_memories
+                memory_context = (
+                    format_memory_context(
+                        issue_memories
+                    )
                 )
 
-                groq_client = get_groq(
-                    os.getenv("GROQ_API_KEY")
+                groq_client = Groq(
+                    api_key=groq_key
                 )
 
-                response = groq_client.chat.completions.create(
-                    model=GROQ_MODEL,
-                    temperature=0.2,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are the RFP Mind customer support "
-                                "assistant. Respond professionally and "
-                                "helpfully to a reported customer issue. "
-                                "Use recalled organizational memory when "
-                                "relevant. Do not invent facts, promises, "
-                                "timelines, refunds, or actions."
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Customer issue:\n"
-                                f"{customer_issue.strip()}\n\n"
-                                f"Relevant organizational memory:\n"
-                                f"{memory_context}"
-                            ),
-                        },
-                    ],
+                response = (
+                    groq_client
+                    .chat
+                    .completions
+                    .create(
+                        model=GROQ_MODEL,
+                        temperature=0.2,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are the RFP Mind customer "
+                                    "support assistant. Respond "
+                                    "professionally and helpfully "
+                                    "to a reported customer issue. "
+                                    "Use recalled organizational "
+                                    "memory when relevant. Do not "
+                                    "invent facts, promises, "
+                                    "timelines, refunds, or actions."
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"Customer issue:\n"
+                                    f"{customer_issue.strip()}\n\n"
+                                    f"Relevant organizational memory:\n"
+                                    f"{memory_context}"
+                                ),
+                            },
+                        ],
+                    )
                 )
 
                 ai_response = (
-                    response.choices[0].message.content.strip()
+                    response
+                    .choices[0]
+                    .message
+                    .content
+                    .strip()
+                )
+
+                hindsight_client = (
+                    get_hindsight_client(
+                        hindsight_key
+                    )
+                )
+
+                ensure_memory_bank(
+                    hindsight_client,
+                    bank_id,
                 )
 
                 hindsight_client.retain(
-                    bank_id=DEFAULT_BANK_ID,
+                    bank_id=bank_id,
                     content=(
                         f"Customer issue: "
                         f"{customer_issue.strip()}\n"
                         f"AI response: {ai_response}"
                     ),
-                    context="Customer issue and support resolution",
+                    context=(
+                        "Customer issue and support resolution"
+                    ),
                     document_id=(
                         "customer-issue-"
-                        f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+                        +
+                        datetime.datetime.now().strftime(
+                            "%Y%m%d%H%M%S"
+                        )
                     ),
                 )
 
@@ -1764,25 +2212,31 @@ with st.popover("💬"):
                     "Issue received and saved to organizational memory."
                 )
 
-                st.markdown("### 🤖 RFP Mind Response")
-                st.write(ai_response)
-
-            except Exception as e:
-
-                st.error(
-                    f"Unable to process the issue: {e}"
+                st.markdown(
+                    "### 🤖 RFP Mind Response"
                 )
 
-        else:
+                st.write(
+                    ai_response
+                )
 
-            st.warning(
-                "Please describe the issue before submitting."
-            )
+            except Exception as exc:
+
+                st.error(
+                    "Unable to process the issue."
+                )
+
+                st.caption(
+                    str(exc)[:300]
+                )
+
+
 # ============================================================
 # FOOTER
 # ============================================================
 
+st.divider()
+
 st.caption(
-    "RFP Mind · Hindsight-powered "
-    "organizational memory"
+    "RFP Mind · Hindsight-powered organizational memory"
 )
